@@ -1,0 +1,467 @@
+<!--
+  WP2Shell Detection Rules - CVE-2026-63030 / CVE-2026-60137
+  Detects all six WP2Shell exploitation modes across the kill chain:
+
+    MODE 1 - SCAN:      Fingerprint + batch-route probe
+    MODE 2 - CHECK:     Blind SQLi confirmation via author_exclude + SLEEP
+    MODE 3 - RCE:       Pre-auth credential-less RCE (nested batch + SLEEP)
+    MODE 4 - SHELL:     Authenticated RCE (login -> plugin upload -> webshell)
+    MODE 5 - REST WS:   PreAuthRCE REST API webshell variant
+    MODE 6 - ROOT:      LPE prerequisite check post-exploitation
+
+  Rule hierarchy (parent -> child):
+    625100 (group) -> 625101–625199 (attack phases)
+    625200 (group) -> 625201–625299 (post-exploitation IOCs)
+    625300 (group) -> 625301–625399 (chained high-confidence rules)
+
+  Deploy: /var/ossec/etc/rules/wp2shell_rules.xml
+  Add   : <include>etc/rules/wp2shell_rules.xml</include> to ossec.conf
+
+  References:
+    - CVE-2026-63030: REST batch route confusion -> RCE (GHSA-ff9f-jf42-662q)
+    - CVE-2026-60137: WP_Query author__not_in SQLi (GHSA-fpp7-x2x2-2mjf)
+    - Patch: WordPress 7.0.2 / 6.9.5 / 6.8.6 (2026-07-17)
+  =============================================================================
+-->
+
+<group name="wp2shell,attack,web,sqli,rce,wordpress,cve-2026-63030,cve-2026-60137,">
+  <!--   BASE GROUPING RULE (Level 0 - no alert, parent for all others)    -->
+  <rule id="625100" level="0">
+    <decoded_as>wp2shell-web</decoded_as>
+    <description>WP2Shell activity detected - grouping rule.</description>
+  </rule>
+
+  <!-- RECONNAISSANCE / SCAN MODE -->
+  <!-- Source: req_scan_fingerprint(), req_scan_batch_probe() -->
+  <!-- Rule 625101: WP2Shell User-Agent detected (level 7 - scanning) -->
+  <rule id="625101" level="7">
+    <if_sid>625100</if_sid>
+    <match type="pcre2">(?i)wp2shell-(poc|rce)/</match>
+    <description>WP2Shell scanning: fingerprint User-Agent detected - $(wp2s_ua)</description>
+    <mitre>
+      <id>T1595.001</id>  <!-- Active Scanning: Vulnerability Scanning -->
+      <id>T1592.002</id>  <!-- Gather Victim Host Info: Software -->
+    </mitre>
+    <group>wp2shell_scan,wp2shell_ua,</group>
+  </rule>
+
+  <!-- Rule 625102: Batch route probe URI (wp-json/batch/v1 or rest_route=/batch/v1) -->
+  <rule id="625102" level="7">
+    <if_sid>625100</if_sid>
+    <match type="pcre2">/(?:wp-json/batch/v1|\?rest_route=/batch/v1)</match>
+    <description>WP2Shell scanning: batch route probe detected - $(url)</description>
+    <mitre>
+      <id>T1595.001</id>
+    </mitre>
+    <group>wp2shell_scan,wp2shell_uri,</group>
+  </rule>
+
+  <!-- Rule 625103: Scan mode chain = UA + batch URI -->
+  <rule id="625103" level="10">
+    <if_sid>625101</if_sid>
+    <if_matched_sid>625102</if_matched_sid>
+    <same_srcip />
+    <description>WP2Shell scan mode confirmed: UA + batch-route probe from $(srcip)</description>
+    <mitre>
+      <id>T1595.001</id>
+      <id>T1190</id>  <!-- Exploit Public-Facing Application -->
+    </mitre>
+    <group>wp2shell_scan,wp2shell_confirmed,</group>
+  </rule>
+
+  <!-- SQL INJECTION / CHECK MODE -->
+  <!-- Source: req_check_sqli_probe() -->
+  <!-- Rule 625110: Nested batch JSON in request body (route confusion) -->
+  <rule id="625110" level="10">
+    <if_sid>625100</if_sid>
+    <match type="pcre2">"requests"\s*:\s*\[.*?"body"\s*:\s*\{\s*"requests"\s*:\s*\[</match>
+    <description>WP2Shell SQLi: nested batch route confusion payload from $(srcip)</description>
+    <mitre>
+      <id>T1190</id>
+      <id>T1059.001</id>  <!-- Command and Scripting Interpreter: SQLi -->
+    </mitre>
+    <group>wp2shell_sqli,wp2shell_body,</group>
+  </rule>
+
+  <!-- Rule 625111: author_exclude parameter with SQLi keywords -->
+  <rule id="625111" level="12">
+    <if_sid>625100</if_sid>
+    <match type="pcre2">(?i)author_exclude[=:].{0,50}?\b(SLEEP|UNION\s+ALL\s+SELECT|SELECT\s+IF\s*\(|INFORMATION_SCHEMA|CHAR_LENGTH|ASCII\s*\()</match>
+    <description>WP2Shell SQLi: author_exclude injection payload from $(srcip)</description>
+    <mitre>
+      <id>T1190</id>
+      <id>T1595.002</id>
+    </mitre>
+    <group>wp2shell_sqli,wp2shell_body,</group>
+  </rule>
+
+  <!-- Rule 625112: SLEEP-based blind SQLi -->
+  <rule id="625112" level="12">
+    <if_sid>625100</if_sid>
+    <match type="pcre2">(?i)SLEEP\s*\(\s*\d+(?:\.\d+)?\s*\)</match>
+    <description>WP2Shell SQLi: SLEEP-based blind SQL injection from $(srcip)</description>
+    <mitre>
+      <id>T1190</id>
+    </mitre>
+    <group>wp2shell_sqli,wp2shell_body,</group>
+  </rule>
+
+  <!-- Rule 625113: Check mode chain = batch URI + nested batch + author_exclude SQLi -->
+  <rule id="625113" level="14">
+    <if_sid>625110</if_sid>
+    <if_matched_sid>625111</if_matched_sid>
+    <same_srcip />
+    <description>WP2Shell check mode confirmed: SQLi exploitation chain from $(srcip)</description>
+    <mitre>
+      <id>T1190</id>
+    </mitre>
+    <group>wp2shell_sqli,wp2shell_confirmed,</group>
+  </rule>
+
+  <!-- PHASE 3: PRE-AUTH RCE MODE -->
+  <!-- Source: req_rce_detect_probe(), req_rce_oembed_seed() -->
+  <!-- Rule 625120: oEmbed cache poisoning - [embed] shortcode in body -->
+  <rule id="625120" level="13">
+    <if_sid>625100</if_sid>
+    <match type="pcre2">\[embed\s+width="500"\s+height="750"\]</match>
+    <description>WP2Shell RCE: oEmbed cache poisoning payload (pre-auth chain) from $(srcip)</description>
+    <mitre>
+      <id>T1190</id>
+      <id>T1499.004</id>  <!-- Endpoint Denial of Service: Application Exhaustion Flood -->
+    </mitre>
+    <group>wp2shell_rce,wp2shell_body,</group>
+  </rule>
+
+  <!-- Rule 625121: RCE mode — Chrome UA spoofed with batch/v1 POST -->
+  <!-- RCE mode deliberately avoids wp2shell UA; we catch via URI + body instead -->
+  <rule id="625121" level="13">
+    <if_sid>625102</if_sid>
+    <if_matched_sid>625112</if_matched_sid>
+    <same_srcip />
+    <description>WP2Shell RCE mode: spoofed-Chrome-UA SLEEP probe via batch/v1 from $(srcip)</description>
+    <mitre>
+      <id>T1190</id>
+      <id>T1036.003</id>  <!-- Masquerading: Rename System Utilities - not exact, but UA spoof -->
+    </mitre>
+    <group>wp2shell_rce,wp2shell_confirmed,</group>
+  </rule>
+
+  <!-- Rule 625122: Full RCE pre-auth chain = nested batch + SLEEP + author_exclude -->
+  <rule id="625122" level="15">
+    <if_sid>625110</if_sid>
+    <if_matched_sid>625112</if_matched_sid>
+    <if_matched_sid>625111</if_matched_sid>
+    <same_srcip />
+    <description>WP2Shell CRITICAL: full pre-auth RCE chain detected from $(srcip) - nested batch + SLEEP + author_exclude SQLi</description>
+    <mitre>
+      <id>T1190</id>
+      <id>T1059</id>   <!-- Command and Scripting Interpreter -->
+    </mitre>
+    <group>wp2shell_rce,wp2shell_confirmed,wp2shell_critical,</group>
+  </rule>
+
+  <!-- AUTHENTICATED SHELL MODE -->
+  <!-- Source: req_shell_login_*(), req_shell_plugin_upload*() -->
+  <!-- req_shell_webshell_*() -->
+  <!-- Rule 625130: Webshell plugin upload attempt -->
+  <rule id="625130" level="14">
+    <if_sid>625100</if_sid>
+    <match type="pcre2">(?i)(action=upload-plugin.*wp2shell|wp2shell.*action=upload-plugin|filename="wp2shell-[a-f0-9]+\.zip")</match>
+    <description>WP2Shell webshell upload: malicious plugin ZIP from $(srcip) - $(url)</description>
+    <mitre>
+      <id>T1505.003</id>  <!-- Server Software Component: Web Shell -->
+      <id>T1105</id>       <!-- Ingress Tool Transfer -->
+    </mitre>
+    <group>wp2shell_webshell,wp2shell_upload,</group>
+  </rule>
+
+  <!-- Rule 625131: Token-gated webshell command execution (?tok= or ?c=) -->
+  <rule id="625131" level="14">
+    <if_sid>625100</if_sid>
+    <match type="pcre2">[?&amp;](?:tok|rm)=[a-zA-Z0-9_\-]{8,}</match>
+    <description>WP2Shell webshell access: token-gated command execution from $(srcip) - $(url)</description>
+    <mitre>
+      <id>T1505.003</id>
+      <id>T1059.004</id>  <!-- Command and Scripting Interpreter: Unix Shell -->
+    </mitre>
+    <group>wp2shell_webshell,wp2shell_access,</group>
+  </rule>
+
+  <!-- Rule 625132: Webshell self-cleanup (?rm= param) -->
+  <rule id="625132" level="12">
+    <if_sid>625131</if_sid>
+    <match type="pcre2">[?&amp;]rm=[a-zA-Z0-9_\-]{8,}</match>
+    <description>WP2Shell anti-forensics: webshell self-cleanup (rm=1) from $(srcip)</description>
+    <mitre>
+      <id>T1070.004</id>  <!-- Indicator Removal: File Deletion -->
+      <id>T1505.003</id>
+    </mitre>
+    <group>wp2shell_webshell,wp2shell_cleanup,</group>
+  </rule>
+
+  <!-- Rule 625133: Shell mode login + plugin upload chain -->
+  <rule id="625133" level="15">
+    <if_sid>625130</if_sid>
+    <if_matched_sid>625101</if_matched_sid>
+    <same_srcip />
+    <description>WP2Shell CRITICAL: authenticated webshell deployment chain from $(srcip) - UA + plugin upload</description>
+    <mitre>
+      <id>T1505.003</id>
+      <id>T1078.001</id>  <!-- Valid Accounts: Default Accounts -->
+    </mitre>
+    <group>wp2shell_webshell,wp2shell_confirmed,wp2shell_critical,</group>
+  </rule>
+
+  <!-- PRE-AUTH REST API WEBSHELL -->
+  <!-- Source: req_rce_webshell_rest_post(), req_rce_webshell_rest_get() -->
+  <!-- Rule 625140: REST API webshell route (/wp2shell/v1/<hex>) -->
+  <rule id="625140" level="14">
+    <if_sid>625100</if_sid>
+    <match type="pcre2">(?i)/wp2shell/v1/[a-f0-9]+|rest_route=/wp2shell/v1/</match>
+    <description>WP2Shell REST webshell: pre-auth API route access from $(srcip) - $(url)</description>
+    <mitre>
+      <id>T1505.003</id>
+      <id>T1190</id>
+    </mitre>
+    <group>wp2shell_webshell,wp2shell_rest,</group>
+  </rule>
+
+  <!-- POST-EXPLOITATION / PRIVILEGE ESCALATION -->
+  <!-- Source: req_root_prereq_lpe_check() -->
+  <!-- Rule 625150: LPE prerequisite check (AF_ALG / crypto module probe) -->
+  <rule id="625150" level="12">
+    <if_sid>625100</if_sid>
+    <match type="pcre2">(?i)(AF_ALG_AUTHENCESN_OK|authencesn\(hmac\(sha256\),cbc\(aes\)\))</match>
+    <description>WP2Shell LPE: kernel crypto module enumeration from $(srcip)</description>
+    <mitre>
+      <id>T1068</id>       <!-- Exploitation for Privilege Escalation -->
+      <id>T1082</id>       <!-- System Information Discovery -->
+    </mitre>
+    <group>wp2shell_lpe,wp2shell_body,</group>
+  </rule>
+
+  <!-- Rule 625151: Path traversal in webshell access -->
+  <rule id="625151" level="15">
+    <if_sid>625131</if_sid>
+    <match type="pcre2">\.\./.*wp2shell-</match>
+    <description>WP2Shell webshell access via path traversal — $(url)</description>
+    <mitre>
+      <id>T1505.003</id>
+    </mitre>
+    <group>wp2shell_webshell,wp2shell_evasion,</group>
+  </rule>
+
+  <!--   POST-EXPLOITATION IoC RULES (filesystem, DB, FIM-based) -->
+  <!--   Source: 1.sh forensics script — find_backdoor_admins() -->
+  <!--   find_webshells() -->
+  <!-- Rule 625200: Base grouping for post-exploitation IoC rules -->
+  <rule id="625200" level="0">
+    <decoded_as>syscheck</decoded_as>
+    <description>WP2Shell post-exploitation IoC grouping rule</description>
+  </rule>
+
+  <!-- Rule 625201: Webshell PHP file creation - small PHP in plugins/mu-plugins/uploads -->
+  <rule id="625201" level="15">
+    <if_sid>554</if_sid>  <!-- FIM: file added -->
+    <field name="file" type="pcre2">(?i)/wp-content/(?:plugins|mu-plugins|uploads)/.*\.php$</field>
+    <description>WP2Shell IoC: potential webshell PHP file created - $(file)</description>
+    <mitre>
+      <id>T1505.003</id>
+    </mitre>
+    <group>wp2shell_ioc,wp2shell_fim,</group>
+  </rule>
+
+  <!-- Rule 625202: Webshell plugin directory - name ending in - <6 hex chars> -->
+  <rule id="625202" level="15">
+    <if_sid>625201</if_sid>
+    <field name="file" type="pcre2">/wp-content/plugins/[^/]+-[0-9a-f]{6}/</field>
+    <description>WP2Shell IoC: webshell plugin directory pattern detected - $(file)</description>
+    <mitre>
+      <id>T1505.003</id>
+      <id>T1036.005</id>  <!-- Masquerading: Match Legitimate Name or Location -->
+    </mitre>
+    <group>wp2shell_ioc,wp2shell_plugin,</group>
+  </rule>
+
+  <!-- Rule 625203: Webshell PHP content - $_GET['c'] + exec sink -->
+  <rule id="625203" level="15">
+    <if_sid>625201</if_sid>
+    <field name="changed_content" type="pcre2">\$_(?:GET|POST|REQUEST)\[['\"]c['\"]\].*(?:hash_equals|system|shell_exec|passthru|proc_open|popen|exec|eval|assert)\s*\(</field>
+    <description>WP2Shell IoC: webshell code signature (token-gated command exec) in $(file)</description>
+    <mitre>
+      <id>T1505.003</id>
+    </mitre>
+    <group>wp2shell_ioc,wp2shell_fim,wp2shell_confirmed,</group>
+  </rule>
+
+  <!-- Rule 625210: Backdoor admin username - wpsvc_<hex>, wp2_<hex>, w2s_<hex> -->
+  <rule id="625210" level="14">
+    <if_sid>625200</if_sid>
+    <match type="pcre2">(?i)(?:wpsvc_|wp2_|w2s_)[0-9a-f]+</match>
+    <description>WP2Shell IoC: backdoor administrator username pattern detected</description>
+    <mitre>
+      <id>T1136.001</id>  <!-- Create Account: Local Account -->
+      <id>T1078.001</id>  <!-- Valid Accounts -->
+    </mitre>
+    <group>wp2shell_ioc,wp2shell_backdoor_admin,</group>
+  </rule>
+
+  <!-- Rule 625211: Backdoor admin email domain - @wordpress-svc, @wordpress-noreply, @x.lol -->
+  <rule id="625211" level="14">
+    <if_sid>625200</if_sid>
+    <match type="pcre2">(?i)@(?:wordpress-svc\.internal|wordpress-noreply\.net|wp2shell\.[a-z]+|shellcode\.[a-z]+|x\.lol)</match>
+    <description>WP2Shell IoC: backdoor administrator email domain detected</description>
+    <mitre>
+      <id>T1136.001</id>
+    </mitre>
+    <group>wp2shell_ioc,wp2shell_backdoor_admin,</group>
+  </rule>
+
+  <!--   EVASION / EDGE CASE DETECTION (INFERRED patterns) -->
+  <!--   Source: TestEdgeCases class  (1.py) -->
+  <!-- Rule 625160: URL-encoded batch/v1 rest_route (%2Fbatch%2Fv1) -->
+  <rule id="625160" level="10">
+    <if_sid>625100</if_sid>
+    <match type="pcre2">(?i)rest_route=%2[Ff]batch%2[Ff]v1</match>
+    <description>WP2Shell evasion (INFERRED): URL-encoded batch route probe from $(srcip)</description>
+    <mitre>
+      <id>T1595.001</id>
+      <id>T1027.005</id>  <!-- Obfuscated Files or Information: Indicator Removal from Tools -->
+    </mitre>
+    <group>wp2shell_evasion,wp2shell_uri,</group>
+  </rule>
+
+  <!-- Rule 625161: SLEEP with minimal/no whitespace - edge case -->
+  <rule id="625161" level="12">
+    <if_sid>625112</if_sid>
+    <match type="pcre2">(?i)SLEEP\(\d+\)</match>
+    <description>WP2Shell SQLi (INFERRED): compact SLEEP() with no whitespace from $(srcip)</description>
+    <mitre>
+      <id>T1190</id>
+    </mitre>
+    <group>wp2shell_sqli,wp2shell_evasion,</group>
+  </rule>
+
+  <!-- Rule 625162: Case-variant UA (WP2SHELL-RCE/1.0 all-uppercase) -->
+  <rule id="625162" level="7">
+    <if_sid>625101</if_sid>
+    <match type="pcre2">(?i)wp2shell-(poc|rce)/</match>
+    <description>WP2Shell scanning (INFERRED): case-variant User-Agent from $(srcip)</description>
+    <mitre>
+      <id>T1595.001</id>
+    </mitre>
+    <group>wp2shell_ua,wp2shell_evasion,</group>
+  </rule>
+
+  <!-- Rule 625163: Empty/missing Host header with wp2shell UA -->
+  <rule id="625163" level="10">
+    <if_sid>625101</if_sid>
+    <description>WP2Shell scan (INFERRED): wp2shell UA with missing/empty Host header from $(srcip)</description>
+    <mitre>
+      <id>T1595.001</id>
+    </mitre>
+    <group>wp2shell_ua,wp2shell_evasion,</group>
+  </rule>
+
+  <!--   HIGH-CONFIDENCE CHAINED RULES (AND-logic, all conditions must     -->
+  <!--   match within the correlation window)                               -->
+  <!--   Source: TestChainedRules class  (1.py)                            -->
+  <!--   These represent confirmed WP2Shell exploitation, not just probes.  -->
+  <!-- Rule 625300: Base grouping for chained high-confidence detections -->
+  <rule id="625300" level="0">
+    <decoded_as>wp2shell-web</decoded_as>
+    <description>WP2Shell high-confidence chained detection grouping.</description>
+  </rule>
+
+  <!-- Rule 625301: Scan mode chain = wp2shell UA + batch URI -->
+  <rule id="625301" level="12">
+    <if_sid>625101</if_sid>
+    <if_matched_sid>625102</if_matched_sid>
+    <same_srcip />
+    <description>WP2Shell CONFIRMED SCAN: wp2shell UA + batch/v1 route probe from $(srcip)</description>
+    <mitre>
+      <id>T1595.001</id>
+    </mitre>
+    <group>wp2shell_confirmed,wp2shell_scan,</group>
+  </rule>
+
+  <!-- Rule 625302: Check mode chain = batch URI + nested batch + author_exclude SQLi -->
+  <rule id="625302" level="14">
+    <if_sid>625102</if_sid>
+    <if_matched_sid>625110</if_matched_sid>
+    <if_matched_sid>625111</if_matched_sid>
+    <same_srcip />
+    <description>WP2Shell CONFIRMED SQLi: batch route + nested batch + author_exclude injection from $(srcip)</description>
+    <mitre>
+      <id>T1190</id>
+    </mitre>
+    <group>wp2shell_confirmed,wp2shell_sqli,</group>
+  </rule>
+
+  <!-- Rule 625303: RCE mode chain = batch URI + nested batch + SLEEP - CRITICAL -->
+  <rule id="625303" level="15">
+    <if_sid>625102</if_sid>
+    <if_matched_sid>625110</if_matched_sid>
+    <if_matched_sid>625112</if_matched_sid>
+    <same_srcip />
+    <description>WP2Shell CONFIRMED PRE-AUTH RCE: batch route + nested batch + SLEEP injection from $(srcip)</description>
+    <mitre>
+      <id>T1190</id>
+      <id>T1059</id>
+    </mitre>
+    <group>wp2shell_confirmed,wp2shell_critical,wp2shell_rce,</group>
+  </rule>
+
+  <!-- Rule 625304: Webshell access chain = wp2shell UA + token-gated params - CRITICAL -->
+  <rule id="625304" level="15">
+    <if_sid>625101</if_sid>
+    <if_matched_sid>625131</if_matched_sid>
+    <same_srcip />
+    <description>WP2Shell CONFIRMED WEBSHELL ACCESS: wp2shell UA + token-gated command from $(srcip)</description>
+    <mitre>
+      <id>T1505.003</id>
+      <id>T1059.004</id>
+    </mitre>
+    <group>wp2shell_confirmed,wp2shell_critical,wp2shell_webshell,</group>
+  </rule>
+
+  <!-- Rule 625305: REST webshell chain = wp2shell/v1 route + JSON POST body -->
+  <rule id="625305" level="15">
+    <if_sid>625140</if_sid>
+    <same_srcip />
+    <description>WP2Shell CONFIRMED REST WEBSHELL: wp2shell/v1 route access from $(srcip)</description>
+    <mitre>
+      <id>T1505.003</id>
+      <id>T1190</id>
+    </mitre>
+    <group>wp2shell_confirmed,wp2shell_critical,wp2shell_webshell,</group>
+  </rule>
+
+  <!-- Rule 625306: Full exploit chain = UA + batch URI + nested batch + SLEEP + author_exclude -->
+  <rule id="625306" level="15">
+    <if_sid>625303</if_sid>
+    <if_matched_sid>625111</if_matched_sid>
+    <same_srcip />
+    <description>WP2Shell FULL EXPLOIT CHAIN: all SQLi+RCE indicators confirmed from $(srcip)</description>
+    <mitre>
+      <id>T1190</id>
+      <id>T1059</id>
+      <id>T1505.003</id>
+    </mitre>
+    <group>wp2shell_confirmed,wp2shell_critical,wp2shell_full_chain,</group>
+  </rule>
+
+  <!--   COMPOSITE CORRELATION RULE (frequency-based, multi-source)         -->
+  <!--   Triggers when multiple WP2Shell rules fire from the same IP        -->
+  <!--   within a short window — indicates active exploitation campaign.    -->
+  <rule id="625399" level="15" frequency="3" timeframe="300">
+    <if_matched_sid>625101,625102,625103,625110,625111,625112,625113,625120,625121,625122,625130,625131,625133,625140,625150,625160,625161</if_matched_sid>
+    <same_srcip />
+    <description>WP2Shell EXPLOITATION CAMPAIGN: $(srcip) triggered $(count) WP2Shell detection rules within 5 minutes</description>
+    <mitre>
+      <id>T1190</id>
+      <id>T1505.003</id>
+    </mitre>
+    <group>wp2shell_confirmed,wp2shell_critical,wp2shell_campaign,</group>
+  </rule>
+</group>

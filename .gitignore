@@ -1,0 +1,23 @@
+# Exploit source code - do not commit actual wp2shell tooling
+1.py
+2.py
+3.py
+
+# 1.sh quarantine output
+wp2shell-quarantine-*/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
