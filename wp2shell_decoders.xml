@@ -3,14 +3,16 @@
   Parses web server access logs for WP2Shell-specific indicators.
   Deploy: /var/ossec/etc/decoders/local_decoder.xml (or a dedicated file)
 
-  The stock Wazuh web-accesslog decoder extracts srcip, url, id, protocol,
-  and srcport from CLF/combined-format Apache/Nginx logs. This decoder
-  extends detection by:
-    - Capturing the full User-Agent header (available in combined log format)
-    - Marking requests that carry WP2Shell URI patterns
-    - Extracting key query-string parameters (tok, rm, rest_route, c)
+  Decoder architecture (3 decoders, 0 conflicts):
+    wp2shell-web    - parent: matches WP2Shell URI patterns
+    wp2shell-web-qs - child: extracts tok= / rm= query-string tokens
+    wp2shell-ua-raw - standalone: catches wp2shell UA in any log line
 
-  EXTRACTED: patterns are traced directly to wp2shell source functions.
+  UA detection is handled directly by rule &lt;match&gt; patterns, not
+  by extracted decoder fields - no need for a UA-extraction decoder.
+  Plugin upload detection uses rule-level &lt;match&gt; only.
+
+  EXTRACTED: patterns traced directly to wp2shell source functions.
   INFERRED:  edge-case URL-encoding variants (defense-in-depth).
 -->
 
@@ -19,14 +21,6 @@
   <parent>web-accesslog</parent>
   <use_own_name>true</use_own_name>
   <prematch type="pcre2" offset="after_parent">(?i)(rest_route=/batch/v1|/wp-json/batch/v1|wp2shell|wp-login\.php|wp-admin/update\.php\b.*action=upload-plugin|/wp2shell/v1/)</prematch>
-</decoder>
-
-<!-- Extract User-Agent from combined-format logs -->
-<!-- Stock web-accesslog stops at the request line; this grabs the UA field -->
-<decoder name="wp2shell-web-ua">
-  <parent>wp2shell-web</parent>
-  <regex type="pcre2" offset="after_parent">\x22 [^\x22]*\x22 \x22(?P&lt;wp2s_ua&gt;[^\x22]*)\x22</regex>
-  <order>wp2s_ua</order>
 </decoder>
 
 <!-- Extract key query-string tokens: tok, rm -->
@@ -40,18 +34,4 @@
 <decoder name="wp2shell-ua-raw">
   <program_name>^web-log|^apache|^nginx</program_name>
   <prematch type="pcre2">(?i)wp2shell-(poc|rce)/</prematch>
-</decoder>
-
-<!-- Detect wp2shell REST webshell route in any web request -->
-<decoder name="wp2shell-rest-route">
-  <parent>wp2shell-web</parent>
-  <regex type="pcre2" offset="after_parent">(?i)/wp2shell/v1/(?P&lt;wp2s_route_hex&gt;[a-f0-9]+)</regex>
-  <order>wp2s_route_hex</order>
-</decoder>
-
-<!-- Detect plugin upload URI with wp2shell archive name -->
-<decoder name="wp2shell-plugin-upload">
-  <parent>wp2shell-web</parent>
-  <regex type="pcre2" offset="after_parent">(?i)filename=\x22wp2shell-(?P&lt;wp2s_ziphex&gt;[a-f0-9]+)\.zip\x22</regex>
-  <order>wp2s_ziphex</order>
 </decoder>
