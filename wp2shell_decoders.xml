@@ -10,7 +10,7 @@
 <decoder name="wp2shell-web-ua">
   <parent>wp2shell-web</parent>
   <type>web-log</type>
-  <regex>"[^"]*"\s+"([^"]*)"$</regex>
+  <regex type="pcre2">"[^"]*"\s+"([^"]*)"$</regex>
   <order>wp2s_ua</order>
 </decoder>
 
