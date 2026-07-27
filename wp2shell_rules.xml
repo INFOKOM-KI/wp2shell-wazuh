@@ -430,7 +430,6 @@
   <!-- Rule 625305: REST webshell chain = wp2shell/v1 route + JSON POST body -->
   <rule id="625305" level="15">
     <if_sid>625140</if_sid>
-    <same_srcip />
     <description>WP2Shell CONFIRMED REST WEBSHELL: wp2shell/v1 route access from $(srcip)</description>
     <mitre>
       <id>T1505.003</id>
