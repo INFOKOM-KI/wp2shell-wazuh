@@ -3,9 +3,8 @@
 -->
 <decoder name="wp2shell-web">
   <type>web-log</type>
-  <parent>web-accesslog</parent>
-  <use_own_name>true</use_own_name>
-  <prematch>(?i)(rest_route=/batch/v1|/wp-json/batch/v1|wp2shell|wp-login\.php|wp-admin/update\.php.*action=upload-plugin|/wp2shell/v1/)</prematch>
+  <program_name type="pcre2">^web-log|^apache|^nginx</program_name>
+  <prematch>rest_route=/batch/v1|/wp-json/batch/v1|wp2shell|wp-login|action=upload-plugin|/wp2shell/v1/</prematch>
 </decoder>
 
 <decoder name="wp2shell-web-ua">
@@ -18,6 +17,6 @@
 <decoder name="wp2shell-web-qs">
   <parent>wp2shell-web</parent>
   <type>web-log</type>
-  <regex>[?&amp;](tok|rm)=([a-zA-Z0-9_\-]{8,})</regex>
+  <regex type="pcre2">[?&amp;](tok|rm)=([a-zA-Z0-9_\-]{8,})</regex>
   <order>wp2s_qs_key, wp2s_qs_val</order>
 </decoder>
