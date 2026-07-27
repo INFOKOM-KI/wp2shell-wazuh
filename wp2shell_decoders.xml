@@ -25,14 +25,14 @@
 <!-- Stock web-accesslog stops at the request line; this grabs the UA field -->
 <decoder name="wp2shell-web-ua">
   <parent>wp2shell-web</parent>
-  <regex type="pcre2" offset="after_parent">" \"[^\"]*\" \"(?P<wp2s_ua>[^\"]*)\"</regex>
+  <regex type="pcre2" offset="after_parent">" "[^"]*" "(?P&lt;wp2s_ua&gt;[^"]*)"</regex>
   <order>wp2s_ua</order>
 </decoder>
 
-<!-- Extract key query-string tokens: tok, rm, c, rest_route -->
+<!-- Extract key query-string tokens: tok, rm -->
 <decoder name="wp2shell-web-qs">
   <parent>wp2shell-web</parent>
-  <regex type="pcre2" offset="after_parent">[?&](?P<wp2s_qs_key>tok|rm)=(?P<wp2s_qs_val>[a-zA-Z0-9_\-]{8,})</regex>
+  <regex type="pcre2" offset="after_parent">[?&amp;](?P&lt;wp2s_qs_key&gt;tok|rm)=(?P&lt;wp2s_qs_val&gt;[a-zA-Z0-9_\-]{8,})</regex>
   <order>wp2s_qs_key, wp2s_qs_val</order>
 </decoder>
 
@@ -45,13 +45,13 @@
 <!-- Detect wp2shell REST webshell route in any web request -->
 <decoder name="wp2shell-rest-route">
   <parent>wp2shell-web</parent>
-  <regex type="pcre2" offset="after_parent">(?i)/wp2shell/v1/(?P<wp2s_route_hex>[a-f0-9]+)</regex>
+  <regex type="pcre2" offset="after_parent">(?i)/wp2shell/v1/(?P&lt;wp2s_route_hex&gt;[a-f0-9]+)</regex>
   <order>wp2s_route_hex</order>
 </decoder>
 
 <!-- Detect plugin upload URI with wp2shell archive name -->
 <decoder name="wp2shell-plugin-upload">
   <parent>wp2shell-web</parent>
-  <regex type="pcre2" offset="after_parent">(?i)filename="wp2shell-(?P<wp2s_ziphex>[a-f0-9]+)\.zip"</regex>
+  <regex type="pcre2" offset="after_parent">(?i)filename="wp2shell-(?P&lt;wp2s_ziphex&gt;[a-f0-9]+)\.zip"</regex>
   <order>wp2s_ziphex</order>
 </decoder>
