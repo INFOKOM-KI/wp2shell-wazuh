@@ -25,7 +25,7 @@
 <!-- Stock web-accesslog stops at the request line; this grabs the UA field -->
 <decoder name="wp2shell-web-ua">
   <parent>wp2shell-web</parent>
-  <regex type="pcre2" offset="after_parent">" "[^"]*" "(?P&lt;wp2s_ua&gt;[^"]*)"</regex>
+  <regex type="pcre2" offset="after_parent">\x22 [^\x22]*\x22 \x22(?P&lt;wp2s_ua&gt;[^\x22]*)\x22</regex>
   <order>wp2s_ua</order>
 </decoder>
 
@@ -52,6 +52,6 @@
 <!-- Detect plugin upload URI with wp2shell archive name -->
 <decoder name="wp2shell-plugin-upload">
   <parent>wp2shell-web</parent>
-  <regex type="pcre2" offset="after_parent">(?i)filename="wp2shell-(?P&lt;wp2s_ziphex&gt;[a-f0-9]+)\.zip"</regex>
+  <regex type="pcre2" offset="after_parent">(?i)filename=\x22wp2shell-(?P&lt;wp2s_ziphex&gt;[a-f0-9]+)\.zip\x22</regex>
   <order>wp2s_ziphex</order>
 </decoder>
